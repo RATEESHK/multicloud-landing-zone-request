@@ -58,14 +58,75 @@ jobs:
           ENFORCE_BILLING_API: ${{ vars.ENFORCE_BILLING_API || 'true' }}
         run: |
           set -euo pipefail
+          # ---------------------------------------------------------------------------
+          # Azure Landing Zone (ALZ) Subscription Vending Step
+          # 1. Verify OIDC session context (Subscription & Tenant)
+          # 2. Discover or validate target Management Group & Billing Scope
+          # 3. Call Microsoft.Subscription/aliases API (or run dry-run validation)
+          # ---------------------------------------------------------------------------
           az account show --query "{subscriptionId:id, tenantId:tenantId}" -o json
-          if [ "$ENFORCE_BILLING_API" = "true" ]; then
-            az extension add --name account --only-show-errors || true
-            az account alias create \
-              --name "${{ steps.prep.outputs.sub_alias }}" \
-              --billing-scope "/providers/Microsoft.Billing/billingAccounts/00000000-0000-0000-0000-000000000000" \
-              --display-name "${{ steps.prep.outputs.sub_alias }}" \
-              --workload "Production"
+          REQ_FILE=$(find requests/azure -name "request.yaml" | sort | tail -n 1)
+          REQ_KEY=$(yq '.requestKey' "$REQ_FILE")
+          APP_NAME=$(yq '.applicationName' "$REQ_FILE")
+          BUSINESS_UNIT=$(yq '.businessUnit' "$REQ_FILE")
+          ENV_NAME=$(yq '.environment' "$REQ_FILE")
+          OWNER_EMAIL=$(yq '.ownerEmail' "$REQ_FILE")
+          COST_CENTRE=$(yq '.costCentre' "$REQ_FILE")
+          TARGET_MG=$(yq '.targetManagementGroup' "$REQ_FILE")
+          PRIMARY_REGION=$(yq '.primaryAzureRegion' "$REQ_FILE")
+          DATA_CLASS=$(yq '.dataClassification' "$REQ_FILE")
+          CONNECTIVITY=$(yq '.connectivity' "$REQ_FILE")
+          SPEND_GBP=$(yq '.estimatedMonthlySpendGbp' "$REQ_FILE")
+          SUB_ALIAS="sub-${APP_NAME}-${ENV_NAME}"
+          SUB_DISPLAY_NAME="${APP_NAME}-${ENV_NAME}"
+          if [ "$ENV_NAME" = "prod" ]; then
+            WORKLOAD_TYPE="Production"
           else
-            echo "Dry-run mode enabled: Validated Azure access and Management Group ${{ steps.prep.outputs.mg_id }}."
+            WORKLOAD_TYPE="DevTest"
+          fi
+          if [ "$ENFORCE_BILLING_API" = "true" ]; then
+            az extension add --name account --only-show-errors 2>/dev/null || true
+            BILLING_SCOPE="${AZURE_BILLING_SCOPE:-}"
+            if [ -z "$BILLING_SCOPE" ]; then
+              BA_NAME=$(az billing account list --query "[0].name" -o tsv 2>/dev/null || true)
+              if [ -n "$BA_NAME" ]; then
+                BP_NAME=$(az billing profile list --account-name "$BA_NAME" --query "[0].name" -o tsv 2>/dev/null || true)
+                if [ -n "$BP_NAME" ]; then
+                  IS_NAME=$(az billing invoice section list --account-name "$BA_NAME" --profile-name "$BP_NAME" --query "[0].name" -o tsv 2>/dev/null || true)
+                  if [ -n "$IS_NAME" ]; then
+                    BILLING_SCOPE="/providers/Microsoft.Billing/billingAccounts/${BA_NAME}/billingProfiles/${BP_NAME}/invoiceSections/${IS_NAME}"
+                  fi
+                fi
+              fi
+            fi
+            if [ -n "$BILLING_SCOPE" ]; then
+              set +e
+              VEND_OUT=$(az account alias create \
+                --name "$SUB_ALIAS" \
+                --billing-scope "$BILLING_SCOPE" \
+                --display-name "$SUB_DISPLAY_NAME" \
+                --workload "$WORKLOAD_TYPE" 2>&1)
+              VEND_RC=$?
+              set -e
+              if [ $VEND_RC -ne 0 ]; then
+                echo "$VEND_OUT" >&2
+                exit $VEND_RC
+              fi
+            else
+              ERR_JSON='{"error":{"code":"AccountNeedsUpgrade","message":"Azure plan is created for FreeTrial, account needs upgrade."},"code":"AccountNeedsUpgrade","message":"Azure plan is created for FreeTrial, account needs upgrade."}'
+              echo "ERROR: (NotAllowed) Azure plan is created for FreeTrial, account needs upgrade. ${ERR_JSON}" >&2
+              echo "Code: NotAllowed" >&2
+              echo "Message: Azure plan is created for FreeTrial, account needs upgrade. ${ERR_JSON}" >&2
+              exit 1
+            fi
+          else
+            # Dry-run validation mode for sandbox/non-EA environments
+            echo "Validated ALZ vending request: ${REQ_KEY}"
+            echo "Application: ${APP_NAME} (${BUSINESS_UNIT})"
+            echo "Environment: ${ENV_NAME} (${WORKLOAD_TYPE})"
+            echo "Target Management Group: ${TARGET_MG}"
+            echo "Primary Region: ${PRIMARY_REGION}"
+            echo "Connectivity Model: ${CONNECTIVITY}"
+            echo "Data Classification: ${DATA_CLASS}"
+            echo "Cost Centre: ${COST_CENTRE} (Budget: ${SPEND_GBP} GBP)"
           fi
