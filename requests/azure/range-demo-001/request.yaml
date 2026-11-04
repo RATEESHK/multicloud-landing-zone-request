@@ -1,0 +1,13 @@
+﻿requestKey: range-demo-001
+cloud: azure
+applicationName: range-demo
+businessUnit: Range
+environment: sandbox
+ownerEmail: azurecloudacc0001@gmail.com
+costCentre: LAB-001
+businessJustification: Testing the Azure subscription request and approval workflow
+targetManagementGroup: lztest-sandbox
+primaryAzureRegion: centralindia
+dataClassification: internal
+connectivity: internet-only
+estimatedMonthlySpendGbp: 10
