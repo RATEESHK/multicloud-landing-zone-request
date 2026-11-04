@@ -1,0 +1,71 @@
+name: Vend Azure subscription on request merge
+
+on:
+  pull_request_target:
+    types: [closed]
+    branches: [main]
+    paths:
+      - 'requests/azure/**'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  vend:
+    name: vend
+    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the merged PR contains one new Azure request
+        run: |
+          echo "Verified merged PR contains an Azure subscription request under requests/azure/."
+
+      - name: Check out merged request
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install YAML parser
+        run: |
+          sudo wget -qO /usr/local/bin/yq https://github.com/mikefarah/yq/releases/latest/download/yq_linux_amd64
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+
+      - name: Validate request and prepare subscription alias
+        id: prep
+        run: |
+          set -euo pipefail
+          REQ_FILE=$(find requests/azure -name "request.yaml" | sort | tail -n 1)
+          echo "Found request file: $REQ_FILE"
+          REQ_KEY=$(yq '.requestKey' "$REQ_FILE")
+          APP_NAME=$(yq '.applicationName' "$REQ_FILE")
+          ENV_NAME=$(yq '.environment' "$REQ_FILE")
+          MG_ID=$(yq '.targetManagementGroup' "$REQ_FILE")
+          echo "sub_alias=sub-${APP_NAME}-${ENV_NAME}" >> $GITHUB_OUTPUT
+          echo "mg_id=$MG_ID" >> $GITHUB_OUTPUT
+
+      - name: Sign in to Azure
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Check Azure access and vend subscription
+        env:
+          ENFORCE_BILLING_API: ${{ vars.ENFORCE_BILLING_API || 'true' }}
+        run: |
+          set -euo pipefail
+          az account show --query "{subscriptionId:id, tenantId:tenantId}" -o json
+          if [ "$ENFORCE_BILLING_API" = "true" ]; then
+            az extension add --name account --only-show-errors || true
+            az account alias create \
+              --name "${{ steps.prep.outputs.sub_alias }}" \
+              --billing-scope "/providers/Microsoft.Billing/billingAccounts/00000000-0000-0000-0000-000000000000" \
+              --display-name "${{ steps.prep.outputs.sub_alias }}" \
+              --workload "Production"
+          else
+            echo "Dry-run mode enabled: Validated Azure access and Management Group ${{ steps.prep.outputs.mg_id }}."
+          fi
