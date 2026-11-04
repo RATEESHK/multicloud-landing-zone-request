@@ -3,11 +3,11 @@ cloud: azure
 applicationName: range-demo
 businessUnit: Range
 environment: sandbox
-ownerEmail: muthuvenkatesh2002@xxx.com
+ownerEmail: azurecloudacc0001@gmail.com
 costCentre: LAB-001
 businessJustification: Testing the Azure subscription request and approval workflow
 targetManagementGroup: lztest-sandbox
-primaryAzureRegion: uksouth
+primaryAzureRegion: centralindia
 dataClassification: internal
 connectivity: internet-only
 estimatedMonthlySpendGbp: 10
